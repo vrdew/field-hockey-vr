@@ -1,96 +1,58 @@
-using UnityEngine;
-using UnityEngine.Animations.Rigging;
+﻿using UnityEngine;
 using System.Collections.Generic;
 
 public class AvatarControl : MonoBehaviour
 {
-    [Header("Smoothing Settings")]
+    [Header("References (all under AvatarRig)")]
+    public Transform avatarRoot;        // Drag the AvatarRig transform here
+    public Transform leftController;    // Drag XR Rig ▶ Camera Offset ▶ Left Controller
+    public Transform rightController;   // Drag XR Rig ▶ Camera Offset ▶ Right Controller
+    public Transform leftHandTarget;    // Your empty target under AvatarRig
+    public Transform rightHandTarget;   // Your empty target under AvatarRig
+
+    [Header("Smoothing (optional)")]
+    public bool useSmoothing = false;
     public int windowSize = 5;
-    public float kalmanQ = 0.00001f;
-    public float kalmanR = 0.01f;
+    private Queue<Vector3> leftQueue = new Queue<Vector3>();
+    private Queue<Vector3> rightQueue = new Queue<Vector3>();
 
-    [Header("IK Targets")]
-    public Transform leftHandTarget;
-    public Transform rightHandTarget;
-    public Transform leftFootTarget;
-    public Transform rightFootTarget;
-
-    private Queue<Vector3> leftHandPositions = new Queue<Vector3>();
-    private Queue<Vector3> rightHandPositions = new Queue<Vector3>();
-    private Queue<Vector3> leftFootPositions = new Queue<Vector3>();
-    private Queue<Vector3> rightFootPositions = new Queue<Vector3>();
-
-    private KalmanFilter kalmanFilterX = new KalmanFilter();
-    private KalmanFilter kalmanFilterY = new KalmanFilter();
-    private KalmanFilter kalmanFilterZ = new KalmanFilter();
-
-    void Update()
+    void LateUpdate()
     {
-        // Update smoothed positions for hands and feet
-        Vector3 smoothedLeftHandPosition = GetSmoothedPosition(leftHandTarget.position, leftHandPositions);
-        Vector3 smoothedRightHandPosition = GetSmoothedPosition(rightHandTarget.position, rightHandPositions);
-        Vector3 smoothedLeftFootPosition = GetSmoothedPosition(leftFootTarget.position, leftFootPositions);
-        Vector3 smoothedRightFootPosition = GetSmoothedPosition(rightFootTarget.position, rightFootPositions);
+        // 1) read controller world-space
+        Vector3 worldL = leftController.position;
+        Vector3 worldR = rightController.position;
 
-        // Apply Kalman filter for additional smoothing
-        smoothedLeftHandPosition = ApplyKalmanFilter(smoothedLeftHandPosition);
-        smoothedRightHandPosition = ApplyKalmanFilter(smoothedRightHandPosition);
-        smoothedLeftFootPosition = ApplyKalmanFilter(smoothedLeftFootPosition);
-        smoothedRightFootPosition = ApplyKalmanFilter(smoothedRightFootPosition);
+        // 2) convert into Avatar-local space
+        Vector3 localL = avatarRoot.InverseTransformPoint(worldL);
+        Vector3 localR = avatarRoot.InverseTransformPoint(worldR);
 
-        // Update IK targets with smoothed positions
-        leftHandTarget.position = smoothedLeftHandPosition;
-        rightHandTarget.position = smoothedRightHandPosition;
-        leftFootTarget.position = smoothedLeftFootPosition;
-        rightFootTarget.position = smoothedRightFootPosition;
-    }
-
-    Vector3 GetSmoothedPosition(Vector3 currentPosition, Queue<Vector3> positionQueue)
-    {
-        positionQueue.Enqueue(currentPosition);
-
-        if (positionQueue.Count > windowSize)
+        // 3) optional moving-average smoothing
+        if (useSmoothing)
         {
-            positionQueue.Dequeue();
+            localL = Smooth(localL, leftQueue);
+            localR = Smooth(localR, rightQueue);
+        }
+        else
+        {
+            leftQueue.Clear();
+            rightQueue.Clear();
         }
 
-        Vector3 smoothedPosition = Vector3.zero;
-        foreach (Vector3 pos in positionQueue)
-        {
-            smoothedPosition += pos;
-        }
-        smoothedPosition /= positionQueue.Count;
+        // 4) apply to your IK targets **locally**  
+        leftHandTarget.localPosition = localL;
+        rightHandTarget.localPosition = localR;
 
-        return smoothedPosition;
+        // 5) mirror rotation too (if your Two-Bone IK uses rotation)
+        leftHandTarget.localRotation = Quaternion.Inverse(avatarRoot.rotation) * leftController.rotation;
+        rightHandTarget.localRotation = Quaternion.Inverse(avatarRoot.rotation) * rightController.rotation;
     }
 
-    Vector3 ApplyKalmanFilter(Vector3 position)
+    Vector3 Smooth(Vector3 v, Queue<Vector3> q)
     {
-        position.x = kalmanFilterX.Update(position.x);
-        position.y = kalmanFilterY.Update(position.y);
-        position.z = kalmanFilterZ.Update(position.z);
-        return position;
-    }
-}
-
-public class KalmanFilter
-{
-    private float q;
-    private float r;
-    private float p = 1, x = 0, k;
-
-    public KalmanFilter(float q = 0.00001f, float r = 0.01f)
-    {
-        this.q = q;
-        this.r = r;
-    }
-
-    public float Update(float measurement)
-    {
-        p = p + q;
-        k = p / (p + r);
-        x = x + k * (measurement - x);
-        p = (1 - k) * p;
-        return x;
+        q.Enqueue(v);
+        if (q.Count > windowSize) q.Dequeue();
+        Vector3 sum = Vector3.zero;
+        foreach (var x in q) sum += x;
+        return sum / q.Count;
     }
 }
